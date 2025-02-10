@@ -6,6 +6,8 @@ from agent.memory import MemoryManager
 from agent.tools import WebSearchTool, WikipediaTool
 from datetime import datetime
 from agent.logger import AgentLogger
+from config import Config
+import json
 
 class StatefulAgent:
     def __init__(self, agent_id: str):
@@ -18,6 +20,7 @@ class StatefulAgent:
         self.llm_wrapper = OllamaWrapper()
         self.llm = self.llm_wrapper.get_llm()
         self.logger = AgentLogger(agent_id)
+        self.config = Config()
         
         self.persona = f"""
         You are an adaptive AI assistant that learns from interactions. 
@@ -30,6 +33,11 @@ class StatefulAgent:
 
     def process_message(self, message: str) -> str:
         self.logger.log_activity("message_received", {"query": message})
+
+        if self._is_complex_query(message):
+            self.logger.log_activity("complex_query", {"query": message})
+            return self._process_complex_query(message)
+        
         if self._is_about_history(message):
             self.logger.log_activity("history_query", {"query": message})
             return self._handle_history_query(message)
@@ -43,6 +51,7 @@ class StatefulAgent:
         if search_type == 'llm':
             # LLM-based response
             response = self.llm.invoke(message).content
+            response = self._postprocess_response(response)
             self.memory.add_memory(
                 experience=f"User: {message}\nDo not ask back any questions, just answer.\n\nAssistant: {response}",
                 metadata={'type': 'conversation'}
@@ -82,6 +91,7 @@ class StatefulAgent:
             "query": message
         }).content
         
+        response = self._postprocess_response(response)
         # Update memory
         self.memory.add_memory(
             experience=f"User: {message}\nAssistant: {response}",
@@ -89,6 +99,75 @@ class StatefulAgent:
         )
         self.logger.log_activity("response_generated", {"response": response})
         return response
+    
+    def _process_complex_query(self, query: str) -> str:
+        """Handle complex queries by breaking them into sub-queries"""
+        sub_queries = self._decompose_query(query)
+        results = []
+        
+        for sub_q in sub_queries:
+            results.append(self._determine_search_needs(sub_q))
+        
+        return self._synthesize_results(query, sub_queries, results)
+    
+    def _decompose_query(self, query: str) -> List[str]:
+        """Break down complex query into sub-questions"""
+        self.logger.log_activity("query_decomposition", {"query": query})
+        prompt = f"""Break this complex query into standalone sub-questions:
+        Query: {query}
+        
+        Respond with list in format: ```json
+        {{"sub_questions": ["q1", "q2", "q3"]}}```"""
+        
+        response = self.llm.invoke(prompt).content
+        response = self._postprocess_response(response)
+        try:
+            match = re.search(r'```json\n(.*?)\n```', response, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))['sub_questions']
+            return [query]
+        except:
+            return [query]
+
+
+    def _synthesize_results(self, original_query: str, sub_queries: List[str], results: List) -> str:
+        """Combine sub-query results into final answer"""
+        context = []
+        for q, res in zip(sub_queries, results):
+            context.append(f"Sub-query: {q}\nResults: {str(res)[:200]}...")
+        
+        prompt = f"""Synthesize this information into a coherent answer:
+        Original query: {original_query}
+        
+        Sub-query results:
+        {chr(10).join(context)}
+        
+        Provide a comprehensive answer that addresses all aspects of the original query."""
+        res = self.llm.invoke(prompt).content
+        res = self._postprocess_response(res)
+        self.logger.log_activity("synthesis", {"query": original_query, "response": res})
+        self.memory.add_memory(
+            experience=f"User: {original_query}\nAssistant: {res}",
+            metadata={'type': 'synthesis'}
+        )
+        return res
+    
+    def _is_complex_query(self, query: str) -> bool:
+        """Determine if query requires decomposition"""
+        prompt = f"""Does this query contain multiple independent questions or require multiple information sources?
+        Query: {query}
+        
+        Consider complex if:
+        - Asks about different topics
+        - Requires both factual and current information
+        - Uses conjunctions like 'and', 'also', 'plus'
+        
+        Respond ONLY with 'yes' or 'no'"""
+        
+        response = self.llm.invoke(prompt).content.lower().strip()
+        response = self._postprocess_response(response)
+        self.logger.log_activity("complex_query_check", {"query": query, "response": response})
+        return 'yes' in response
     
     def _break_down_query_into_keywords(self, query: str) -> List[str]:
         prompt = f"""
@@ -117,10 +196,12 @@ class StatefulAgent:
         - 'none' for no search
         
         usually go for both unless the query is very specific.
+        Choose web if query is searchable on the web.
+        Choose wikipedia if query has keywords that can be searched on wikipedia.
         If you are unsure or the query looks irrelevant to web search or wikipedia, choose 'llm'.
         Respond in format: 'tool'"""
         response = self.llm.invoke(prompt).content.lower().strip()
-        
+        response = self._postprocess_response(response)
         self.logger.log_activity("search_decision", {"query": query, "response": response})
         valid_tools = ['both', 'web', 'wikipedia', 'llm']
         for tool in valid_tools:
@@ -150,6 +231,7 @@ class StatefulAgent:
         Respond ONLY with 'yes' or 'no'"""
         
         response = self.llm.invoke(prompt).content.lower().strip()
+        response = self._postprocess_response(response)
         return 'yes' in response
 
     def _handle_history_query(self, query: str) -> str:
@@ -164,20 +246,48 @@ class StatefulAgent:
         ]
         
         # Generate response
-        prompt = f"""You're answering a question about conversation history.
+        search_type = self._determine_search_needs(query)
+        context = "\n".join(user_questions)
+        
+        # Perform search if needed
+        if search_type not in ['llm', 'none']:
+            search_results = []
+            
+            if search_type in ['web', 'both']:
+                web_results = self.tools['web'].search(query)
+                search_results.extend([f"Web: {r['snippet']}" for r in web_results])
+                
+            if search_type in ['wikipedia', 'both']:
+                wiki_results = []
+                keywords = self._break_down_query_into_keywords(query)
+                for keyword in keywords:
+                    wiki_results.append(self.tools['wikipedia'].search(query))
+                search_results.extend([f"Wikipedia: {wiki_results}"])
+            
+            context += "\n\nFresh Search Results:\n" + "\n".join(search_results)
+
+        # Generate response
+        prompt = f"""You're answering a question that combines history and current information.
         User query: {query}
         
-        Relevant previous interactions:
-        {chr(10).join(user_questions)}
+        Context from history:
+        {context}
         
-        Respond helpfully using this information."""
+        If using search results, verify facts with the context. Respond helpfully:"""
         
         response = self.llm.invoke(prompt).content
+        response = self._postprocess_response(response)
         
-        # Add to memory without creating infinite loop
         self.memory.add_memory(
             experience=f"User: {query}\nAssistant: {response}",
             metadata={'type': 'history_query'}
         )
-        
         return response
+    
+    def _postprocess_response(self, content):
+        if self.config.model == "deepseek-r1:14b":
+            # Remove everything between <think> tags
+            cleaned = re.sub(r'<think>(.*?)(</think>)', '', content, flags=re.DOTALL)
+            return cleaned.strip()
+        return content
+

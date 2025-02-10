@@ -8,6 +8,7 @@ from agent.llm import OllamaWrapper
 from datetime import datetime
 import streamlit as st
 from agent.logger import AgentLogger
+from config import Config
 
 class MemoryManager:
     def __init__(self, agent_id: str):
@@ -16,18 +17,25 @@ class MemoryManager:
         self.embeddings = self.llm_wrapper.get_embeddings()
         self.llm = self.llm_wrapper.get_llm()
         self.logger = AgentLogger(agent_id)
-
+        self.config = Config()
         # Memory storage
         self.short_term_memory: List[Dict] = []
         self.long_term_memory: List[Dict] = []
         
         # FAISS indices
-        self.short_term_index = faiss.IndexFlatL2(4096) # 4096 is the size of the embeddings for Llama 3.1
-        self.long_term_index = faiss.IndexFlatL2(4096)
+        self.short_term_index = faiss.IndexFlatL2(self.config.embed_size) # 4096 is the size of the embeddings for Llama 3.1
+        self.long_term_index = faiss.IndexFlatL2(self.config.embed_size) # 5120 is the size of embeddings for deepseek-r1:14b
         
         self._load_state()
 
     def add_memory(self, experience: str, metadata: Dict = None):
+        """
+        Add a new memory to the agent's memory
+        Args:
+            experience (str): The experience text
+            metadata (Dict): Additional metadata for the memory
+        """
+        os.makedirs('data', exist_ok=True)
         memory = {
             'experience': experience,
             'metadata': metadata or {},
@@ -146,5 +154,5 @@ class MemoryManager:
         except Exception as e:
             print(f"Error loading memory state: {e}")
             # Initialize empty indices if loading fails
-            self.short_term_index = faiss.IndexFlatL2(4096)
-            self.long_term_index = faiss.IndexFlatL2(4096)
+            self.short_term_index = faiss.IndexFlatL2(self.config.embed_size)
+            self.long_term_index = faiss.IndexFlatL2(self.config.embed_size)

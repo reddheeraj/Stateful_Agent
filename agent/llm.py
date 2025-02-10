@@ -1,12 +1,14 @@
 from langchain_ollama import OllamaEmbeddings, ChatOllama
+from config import Config
 
 class OllamaWrapper:
-    def __init__(self, model_name="llama3.1:latest"):
+    def __init__(self):
+        self.config = Config()
         self.embeddings = OllamaEmbeddings(
-            model=model_name
+            model=self.config.model,
         )
         self.llm = ChatOllama(
-            model=model_name,
+            model=self.config.model,
             temperature=0.7
         )
     
