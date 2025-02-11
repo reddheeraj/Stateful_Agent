@@ -26,7 +26,7 @@ def display_activity():
             st.caption(activity['content'])
 
 def main():
-    st.title("Stateful Agent Demo")
+    st.title("Stateful Agent")
     initialize_agent()
 
     # # Split layout into two columns
