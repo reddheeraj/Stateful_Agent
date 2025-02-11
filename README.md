@@ -61,8 +61,20 @@ cd Stateful_Agent
 pip install -r requirements.txt
 ```
 
-- Set up [SERPAPI](https://serpapi.com/) API key needed for web search.
-- Install Ollama from [here](https://ollama.com/) if you don't have it yet.
+- Set up [SERPAPI](https://serpapi.com/) API key needed for web search and add it in a `.env` file.
+```bash
+SERPAPI_KEY=<key here>
+```
+- Install Ollama from [here](https://ollama.com/) if you don't have it yet. Make sure to run Ollama and pull the required language model.
+```bash
+ollama pull <model name>
+```
+- Change the model name and embedding size of the model in the `config.py` file. To check the model's embedding size, simply run the below commands in a terminal:
+```bash
+ollama run <model name>
+/show info
+```
+
 ### Running the Agent
 Simply execute:
 ```bash
